@@ -1,0 +1,74 @@
+name: Sync Upstream Repository
+on:
+  schedule:
+    - cron: '0 * * * *'  # Check every hour on the hour
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Add upstream repository
+        run: |
+          git remote add upstream https://github.com/develop202/migu_video.git
+          git fetch upstream
+
+      - name: Check for upstream updates
+        id: check
+        run: |
+          UPSTREAM_COMMIT=$(git rev-parse upstream/main)
+          LOCAL_COMMIT=$(git rev-parse HEAD)
+          
+          if [ "$UPSTREAM_COMMIT" != "$LOCAL_COMMIT" ]; then
+            echo "has_update=true" >> $GITHUB_OUTPUT
+            echo "Upstream latest commit: $UPSTREAM_COMMIT"
+            echo "Local current commit: $LOCAL_COMMIT"
+          else
+            echo "has_update=false" >> $GITHUB_OUTPUT
+            echo "Already up to date"
+          fi
+
+      - name: Pull updates (exclude .github and .workflow)
+        if: steps.check.outputs.has_update == 'true'
+        run: |
+          # Configure git
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          
+          # Create temporary branch
+          git checkout -b upstream-temp upstream/main
+          
+          # Switch back to main branch
+          git checkout main
+          
+          # Merge without auto-commit
+          git merge --no-commit --no-ff upstream-temp
+          
+          # Discard changes to .github and .workflow (keep local versions)
+          git checkout --ours .github/ .workflow/ 2>/dev/null || true
+          git reset HEAD .github/ .workflow/ 2>/dev/null || true
+          git checkout -- .github/ .workflow/ 2>/dev/null || true
+          
+          # Check if there are other files to update
+          if git diff --quiet --exit-code && [ -z "$(git status --porcelain | grep -v '^.github\|^.workflow')" ]; then
+            echo "Only .github or .workflow folders have updates, ignoring"
+            git merge --abort
+          else
+            # Show files to be updated
+            echo "The following files will be updated:"
+            git status --porcelain
+            
+            # Commit and push
+            git commit -m "Sync upstream updates ($(date +'%Y-%m-%d %H:%M:%S'))"
+            git push
+            echo "Sync completed"
+          fi
+          
+          # Clean up temporary branch
+          git branch -D upstream-temp
